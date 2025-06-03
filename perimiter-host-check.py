@@ -17,7 +17,7 @@ import subprocess
 import platform
 import datetime
 import urllib.parse
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import ssl
 import socket
 import argparse
@@ -141,7 +141,7 @@ class ConfigEntry:
         self.group = group or ""
         self.ignore_until = ignore_until  # New field: skip checks until this UTC timestamp
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         # Return keys in the order: url, group, owner, last_check, last_successful_check, comment, ignore_until
         return {
             "url": self.url,
@@ -154,7 +154,7 @@ class ConfigEntry:
         }
 
     @staticmethod
-    def from_dict(data: Dict) -> 'ConfigEntry':
+    def from_dict(data: Dict[str, Any]) -> 'ConfigEntry':
         owner = data.get("owner") or data.get("email")
         if owner is None:
             raise ValueError("Missing 'owner' (or 'email') in configuration entry")
@@ -274,7 +274,7 @@ def check_duplicate_urls(entries: List[ConfigEntry]) -> None:
     """
     Ensure no URL appears more than once in the configuration.
     """
-    seen = {}
+    seen: Dict[str, int] = {}
     for idx, entry in enumerate(entries):
         if entry.url in seen:
             print(f"Error: Duplicate URL found in configuration: {entry.url}")
@@ -318,7 +318,7 @@ def check_network_connectivity() -> None:
         print("Error: No network connectivity (cannot ping 8.8.8.8)")
         sys.exit(1)
 
-def get_ssl_info(hostname: str, port: int = 443) -> Dict:
+def get_ssl_info(hostname: str, port: int = 443) -> Dict[str, Any]:
     """
     Retrieve SSL cert info using cryptography.
     Return dict with subject, issuer, expiry (as a UTC-aware datetime), sans,
@@ -329,6 +329,8 @@ def get_ssl_info(hostname: str, port: int = 443) -> Dict:
         with socket.create_connection((hostname, port)) as sock:
             with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                 cert_bin = ssock.getpeercert(binary_form=True)
+                if cert_bin is None:
+                    return {"error": "Failed to retrieve certificate"}
                 cert = x509.load_der_x509_certificate(cert_bin)
                 
                 subject = cert.subject.rfc4514_string()
@@ -346,8 +348,10 @@ def get_ssl_info(hostname: str, port: int = 443) -> Dict:
 
                 sans = []
                 try:
-                    san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
-                    sans = san_ext.get_values_for_type(x509.DNSName)
+                    san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+                    san_value = san_ext.value
+                    if isinstance(san_value, x509.SubjectAlternativeName):
+                        sans = san_value.get_values_for_type(x509.DNSName)
                 except x509.ExtensionNotFound:
                     pass
 
@@ -363,7 +367,7 @@ def get_ssl_info(hostname: str, port: int = 443) -> Dict:
 ######################################################################
 # Host Checking Logic
 ######################################################################
-def check_single_host(entry: ConfigEntry, now: datetime.datetime, verbose: bool, warning_days: int = DEFAULT_CERT_WARNING_DAYS) -> Dict:
+def check_single_host(entry: ConfigEntry, now: datetime.datetime, verbose: bool, warning_days: int = DEFAULT_CERT_WARNING_DAYS) -> Dict[str, Any]:
     """
     Check a single host: perform a HEAD request, optionally check the SSL cert,
     and track errors/warnings.
@@ -371,7 +375,7 @@ def check_single_host(entry: ConfigEntry, now: datetime.datetime, verbose: bool,
     """
     TIMEOUT = 15  # seconds
     
-    result = {
+    result: Dict[str, Any] = {
         "url": entry.url,
         "group": entry.group,
         "owner": entry.owner,
@@ -403,43 +407,47 @@ def check_single_host(entry: ConfigEntry, now: datetime.datetime, verbose: bool,
             result['redirect_url'] = response.headers.get("Location")
         
         if parsed_url.scheme == 'https':
-            ssl_info = get_ssl_info(parsed_url.hostname)
-            if 'error' in ssl_info:
-                result['warnings'].append(f"SSL certificate check failed: {ssl_info['error']}")
+            hostname = parsed_url.hostname
+            if hostname is None:
+                result['warnings'].append("Invalid hostname in URL")
             else:
-                expiry = ssl_info['expiry']
-                days_to_expiry = (expiry - now).days
-                result['issuer'] = ssl_info['issuer']
-
-                if days_to_expiry < 0:
-                    result['warnings'].append(
-                        f"SSL certificate has expired ({format_utc_timestamp(expiry)})"
-                    )
-                elif days_to_expiry < warning_days:
-                    result['warnings'].append(
-                        f"SSL certificate expires in {days_to_expiry} days ({format_utc_timestamp(expiry)})"
-                    )
-                
-                hostname_mismatch = True
-                if ssl_info['sans']:
-                    for san in ssl_info['sans']:
-                        if hostname_matches(san, parsed_url.hostname):
-                            hostname_mismatch = False
-                            break
+                ssl_info = get_ssl_info(hostname)
+                if 'error' in ssl_info:
+                    result['warnings'].append(f"SSL certificate check failed: {ssl_info['error']}")
                 else:
-                    subject_str = ssl_info['subject']
-                    components = [c.strip() for c in subject_str.split(',')]
-                    for comp in components:
-                        if comp.startswith("CN="):
-                            cn_value = comp[3:].strip()
-                            if hostname_matches(cn_value, parsed_url.hostname):
+                    expiry = ssl_info['expiry']
+                    days_to_expiry = (expiry - now).days
+                    result['issuer'] = ssl_info['issuer']
+
+                    if days_to_expiry < 0:
+                        result['warnings'].append(
+                            f"SSL certificate has expired ({format_utc_timestamp(expiry)})"
+                        )
+                    elif days_to_expiry < warning_days:
+                        result['warnings'].append(
+                            f"SSL certificate expires in {days_to_expiry} days ({format_utc_timestamp(expiry)})"
+                        )
+                    
+                    hostname_mismatch = True
+                    if ssl_info['sans']:
+                        for san in ssl_info['sans']:
+                            if hostname_matches(san, hostname):
                                 hostname_mismatch = False
                                 break
-                
-                if hostname_mismatch:
-                    result['warnings'].append(
-                        "Certificate name does not match hostname (including wildcard check)"
-                    )
+                    else:
+                        subject_str = ssl_info['subject']
+                        components = [c.strip() for c in subject_str.split(',')]
+                        for comp in components:
+                            if comp.startswith("CN="):
+                                cn_value = comp[3:].strip()
+                                if hostname_matches(cn_value, hostname):
+                                    hostname_mismatch = False
+                                    break
+                    
+                    if hostname_mismatch:
+                        result['warnings'].append(
+                            "Certificate name does not match hostname (including wildcard check)"
+                        )
         
         if not result['warnings'] and not result['error']:
             stamp = format_utc_timestamp(now)
@@ -453,7 +461,7 @@ def check_single_host(entry: ConfigEntry, now: datetime.datetime, verbose: bool,
     
     return result
 
-def check_hosts(entries: List[ConfigEntry], workers: int, verbose: bool = False, warning_days: int = DEFAULT_CERT_WARNING_DAYS) -> List[Dict]:
+def check_hosts(entries: List[ConfigEntry], workers: int, verbose: bool = False, warning_days: int = DEFAULT_CERT_WARNING_DAYS) -> List[Dict[str, Any]]:
     """
     Check all hosts in parallel using a specified number of worker threads,
     updating last check timestamps.
@@ -493,7 +501,7 @@ def check_hosts(entries: List[ConfigEntry], workers: int, verbose: bool = False,
 ######################################################################
 # Formatting the Results
 ######################################################################
-def format_tables(results: List[Dict], verbose: bool) -> None:
+def format_tables(results: List[Dict[str, Any]], verbose: bool) -> None:
     """
     Print output tables grouped by the 'group' field.
     Hosts with no group (empty string) are printed first,
@@ -513,8 +521,8 @@ def format_tables(results: List[Dict], verbose: bool) -> None:
         else:
             successes.append(r)
 
-    def group_by(results_list: List[Dict]) -> Dict[str, List[Dict]]:
-        groups = {}
+    def group_by(results_list: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for r in results_list:
             grp = r.get("group", "").strip()
             groups.setdefault(grp, []).append(r)
@@ -708,6 +716,9 @@ def import_config_from_csv(config_path: str, filename: str, verbose: bool) -> No
     try:
         with open(filename, 'r', newline='') as csvfile:
             reader = csv.DictReader(csvfile)
+            if reader.fieldnames is None:
+                print("Error: CSV file appears to be empty or malformed.")
+                sys.exit(1)
             if set(reader.fieldnames) != fieldnames_expected:
                 print("Error: CSV file does not contain the required columns.")
                 print(f"Expected columns: {', '.join(fieldnames_expected)}")
@@ -744,7 +755,7 @@ def import_config_from_csv(config_path: str, filename: str, verbose: bool) -> No
 ######################################################################
 # Main
 ######################################################################
-def main():
+def main() -> None:
     default_workers = 10
     epilog_text = (
         "You can override the default configuration file using '-c FILE'.\n"
