@@ -19,7 +19,7 @@ This script is designed to be run as a scheduled task (e.g., nightly cron job) t
 - Email notifications for responsible parties
 - Tracking of check history
 - Support for hostname grouping and filtering
-- CSV import/export capabilities
+- CSV import/export capabilities with automated timestamped backups
 - Concurrent checking for faster execution
 
 ## Usage
@@ -28,7 +28,19 @@ This script is designed to be run as a scheduled task (e.g., nightly cron job) t
 python3 perimiter-host-check.py [options]
 ```
 
-See the script documentation for available command-line options and configuration details.
+### Common Options
+
+- `-c, --config FILE`: Use an alternate config file instead of the default
+- `-v, --verbose`: Enable verbose output
+- `-w, --workers N`: Set the number of worker threads (default: 10)
+- `-a, --add`: Add URLs to configuration without checking
+- `-e, --edit`: Edit the configuration file
+- `--export [FILE]`: Export config to CSV file (default: perimeter.csv)
+- `-b, --backup`: Create a backup of the config with timestamp (format: export-YYYY-MM-DD-HH-MM-SS.csv)
+- `--import [FILE]`: Import config from CSV file (overwrites current config)
+- `--list [SUBSTRING]`: List URLs in the config, optionally filtered by substring
+
+See the script's help (`--help`) for complete documentation of all options.
 
 ## License
 

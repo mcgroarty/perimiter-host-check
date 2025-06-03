@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
 
-######################################################################
-# perimiter-host-check.py
-# 
-# A monitoring tool that checks SSL/TLS certificates for expiration and
-# verifies host availability across network perimeters. The script can
-# be scheduled to run nightly, providing early warnings for expiring
-# certificates and unreachable hosts. It maintains a configuration of
-# hosts to monitor, tracks their check history, and reports issues with
-# detailed information about certificate status and connectivity.
-######################################################################
-
 import sys
 import os
 import subprocess
@@ -670,6 +659,15 @@ def edit_config(config_path: str, verbose: bool) -> None:
 ######################################################################
 # CSV Export/Import Functions
 ######################################################################
+def create_timestamped_backup_filename() -> str:
+    """
+    Create a backup filename using the current time in the machine's local timezone
+    in the format: export-YYYY-MM-DD-HH-MM-SS.csv
+    """
+    local_now = datetime.datetime.now()
+    timestamp = local_now.strftime("%Y-%m-%d-%H-%M-%S")
+    return f"export-{timestamp}.csv"
+
 def export_config_to_csv(config_path: str, filename: str, verbose: bool) -> None:
     """
     Export the current configuration to a CSV file.
@@ -802,6 +800,11 @@ def main() -> None:
         help="Export config to CSV file (default: perimeter.csv)"
     )
     parser.add_argument(
+        "-b", "--backup",
+        action="store_true",
+        help="Create a backup of the config as a CSV file with timestamp in the filename"
+    )
+    parser.add_argument(
         "--import",
         dest="import_file",
         nargs="?",
@@ -893,8 +896,15 @@ def main() -> None:
     if args.export is not None and args.import_file is not None:
         print("Error: Cannot use both --export and --import options simultaneously.")
         sys.exit(1)
+    if args.export is not None and args.backup:
+        print("Error: Cannot use both --export and --backup options simultaneously.")
+        sys.exit(1)
     if args.export is not None:
         export_config_to_csv(config_path, args.export, args.verbose)
+        sys.exit(0)
+    if args.backup:
+        backup_filename = create_timestamped_backup_filename()
+        export_config_to_csv(config_path, backup_filename, args.verbose)
         sys.exit(0)
     if args.import_file is not None:
         import_config_from_csv(config_path, args.import_file, args.verbose)
